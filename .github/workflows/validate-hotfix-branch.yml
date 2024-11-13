@@ -1,0 +1,66 @@
+# The name of the workflow that will trigger when a Pull Request is created by developers
+name: Validate hotfix commit to UAT Sandbox
+
+# Definition when the workflow should run in developer branch
+on:
+    push:
+      branches: 
+        - 'hotfix/*'
+      paths:
+        - 'force-app/**'
+
+# Jobs to be executed
+jobs:
+    validate-only-changed-metadata-deployment-on-uat:
+        runs-on: ubuntu-latest
+        if: ${{ github.actor != 'dependabot[bot]' }}
+        steps:
+            # Install nodejs
+            - uses: actions/setup-node@v2
+              with:
+                node-version: '14'
+
+            # Checkout the source code
+            - name: 'Checkout source code'
+              uses: actions/checkout@v2
+              with:
+                fetch-depth: 0
+
+            # Installing Salesforce CLI
+            - name: 'Installing Salesforce CLI'
+              run: |
+                  wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
+                  mkdir ~/sfdx
+                  tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
+                  echo "$HOME/sfdx/bin" >> $GITHUB_PATH
+                  ~/sfdx/bin/sfdx version
+
+            # Installing SFDX-Git-Delta plugin - https://github.com/scolladon/sfdx-git-delta
+            - name: 'Installing sfdx git delta package'
+              run: | 
+                  echo y | sfdx plugins:install sfdx-git-delta
+                  sfdx plugins
+
+
+            # Get the UAT Org SFDX URL and store it in a text file
+            - name: 'Populating auth file with SFDX_URL secret of UAT sandbox'
+              shell: bash
+              run: |
+                  echo ${{ secrets.SF_UAT_AUTH_URL}} > ./SF_UAT_AUTH_URL.txt
+
+            # Authenticating to UAT sandbox using the URL stored in the text file
+            - name: 'Authenticating to UAT sandbox'
+              run: sfdx auth:sfdxurl:store -f ./SF_UAT_AUTH_URL.txt -s -a Repro
+
+            # We use SFDX Git Delta to create a directory with only the metadata that has changed, this allows us
+            # to deploy only those changes, as opposed to deploying the entire branch. This helps reducing deployment times
+            #- name: 'Creating delta packages for new, modified or deleted metadata'
+            #  run: | 
+            #      mkdir -p changed-sources
+            #      sfdx sgd:source:delta --to "HEAD" --from "origin/develop" --output changed-sources/ --generate-delta --source force-app/ -i .forceignore
+
+            # We do a check-only deployment of the whole feature branch
+            - name: 'Check-only deployment of the whole feature branch / Run local tests'
+              run: |
+                  chmod +x ./scripts/ValidateFullDeployment.sh
+                  ./scripts/ValidateFullDeployment.sh

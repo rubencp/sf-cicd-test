@@ -1,0 +1,58 @@
+# The name of the workflow that will trigger when a Pull Request is squashed and merged by the Release Manager
+name: Deploy stage branch to UAT sandbox
+
+# Definition when the workflow should run on the stage branch
+on:
+    push:
+      branches: [ stage ]
+      paths:
+        - 'force-app/**'
+            
+
+# Jobs to be executed
+jobs:
+    deploy-branch-to-UAT-sandbox:
+        runs-on: ubuntu-latest
+        if: ${{ github.actor != 'dependabot[bot]' }}
+        steps:
+            # Installing Salesforce CLI
+            - name: 'Installing Salesforce CLI'
+              run: |
+                  wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
+                  mkdir ~/sfdx
+                  tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
+                  echo "$HOME/sfdx/bin" >> $GITHUB_PATH
+                  ~/sfdx/bin/sfdx version
+
+            # Installing SFDX-Git-Delta plugin - https://github.com/scolladon/sfdx-git-delta
+            - name: 'Installing sfdx git delta package'
+              run: | 
+                  echo y | sfdx plugins:install sfdx-git-delta
+                  sfdx plugins
+
+            # Checkout the source code
+            - name: 'Checkout source code'
+              uses: actions/checkout@v2
+              with:
+                fetch-depth: 0
+
+            # Storing secret for UAT sandbox
+            - name: 'Populating auth file with SFDX_URL secret of the UAT Sandbox'
+              shell: bash
+              run: |
+                  echo ${{ secrets.SF_UAT_AUTH_URL}} > ./SF_UAT_AUTH_URL.txt
+
+            - name: 'Creating delta packages for new, modified or deleted metadata'
+              run: | 
+                  mkdir -p changed-sources
+                  sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/ -i .forceignore
+
+            # Authenticating to UAT sandbox
+            - name: 'Authenticating to UAT sandbox'
+              run: sfdx auth:sfdxurl:store -f ./SF_UAT_AUTH_URL.txt -s -a Repro
+
+            # Deploying the whole branch to UAT Sandbox
+            - name: 'Full deployment of the generated delta changes / Run local tests'
+              run: |
+                  chmod +x ./scripts/FullDeployment.sh
+                  ./scripts/FullDeployment.sh
