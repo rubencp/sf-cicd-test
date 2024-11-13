@@ -1,0 +1,70 @@
+# The name of the workflow that will trigger when a Pull Request is created by developers
+name: Validate PR on main branch & check only deployment to Production Org
+
+# Definition when the workflow should run on the main branch
+on:
+    pull_request:
+      # The workflow will run when a pull request is opened, or when a commit is pushed
+      # to the main branch that has an existing pull request
+      types: [opened, synchronize ]
+      branches: [ main ]
+      # Specifing the force-app the directory that is relevant for the check
+      paths:
+        - 'force-app/**'
+
+
+# Jobs to be executed
+jobs:
+    validate-deployment-on-Production-Org:
+        runs-on: ubuntu-latest
+        if: ${{ github.actor != 'dependabot[bot]' }}
+        steps:
+            # Install nodejs
+            - uses: actions/setup-node@v2
+              with:
+                node-version: '14'
+
+            # Checkout the source code
+            - name: 'Checkout source code'
+              uses: actions/checkout@v2
+              with:
+                fetch-depth: 0
+
+            # Installing Salesforce CLI
+            - name: 'Installing Salesforce CLI'
+              run: |
+                  wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
+                  mkdir ~/sfdx
+                  tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
+                  echo "$HOME/sfdx/bin" >> $GITHUB_PATH
+                  ~/sfdx/bin/sfdx version
+
+            # Installing SFDX-Git-Delta plugin - https://github.com/scolladon/sfdx-git-delta
+            - name: 'Installing sfdx git delta package'
+              run: | 
+                  echo y | sfdx plugins:install sfdx-git-delta
+                  sfdx plugins
+
+
+            # Get the Production Org SFDX URL and store it in a text file
+            - name: 'Populating auth file with SFDX_URL secret of Production Org'
+              shell: bash
+              run: |
+                  echo ${{ secrets.SF_PRODUCTION_AUTH_URL}} > ./SF_PRODUCTION_AUTH_URL.txt
+
+            # Authenticating to Production Org using the URL stored in the text file
+            - name: 'Authenticating to Production Org'
+              run: sfdx auth:sfdxurl:store -f ./SF_PRODUCTION_AUTH_URL.txt -s -a Repro
+
+            # We use SFDX Git Delta to create a directory with only the metadata that has changed, this allows us
+            # to deploy only those changes, as opposed to deploying the entire branch. This helps reducing deployment times
+            - name: 'Creating delta packages for new, modified or deleted metadata'
+              run: | 
+                  mkdir -p changed-sources
+                  sfdx sgd:source:delta --to "HEAD" --from "origin/main" --output changed-sources/ --generate-delta --source force-app/ -i .forceignore  
+
+            # We do a check-only deployment of all new/changed metadata and destructive metadata (if any)
+            - name: 'Check-only deployment of the generated delta changes / Run local tests'
+              run: |
+                  chmod +x ./scripts/ValidateFullDeploymentSelectedTests.sh
+                  ./scripts/ValidateFullDeploymentSelectedTests.sh

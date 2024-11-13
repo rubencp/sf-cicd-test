@@ -1,0 +1,57 @@
+# The name of the workflow that will trigger when a Pull Request is squashed and merged by the Release Manager
+name: Deploying main branch to Production org
+
+# Definition when the workflow should run on the main branch
+on:
+    push:
+      branches: [ main ]
+      paths:
+        - 'force-app/**'
+        
+# Jobs to be executed
+jobs:
+    deploy-branch-to-production-org:
+        runs-on: ubuntu-latest
+        if: ${{ github.actor != 'dependabot[bot]' }}
+        steps:
+            # Installing Salesforce CLI
+            - name: 'Installing Salesforce CLI'
+              run: |
+                  wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
+                  mkdir ~/sfdx
+                  tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
+                  echo "$HOME/sfdx/bin" >> $GITHUB_PATH
+                  ~/sfdx/bin/sfdx version
+
+            # Installing SFDX-Git-Delta plugin - https://github.com/scolladon/sfdx-git-delta
+            - name: 'Installing sfdx git delta package'
+              run: | 
+                  echo y | sfdx plugins:install sfdx-git-delta
+                  sfdx plugins
+
+            # Checkout the source code
+            - name: 'Checkout source code'
+              uses: actions/checkout@v2
+              with:
+                fetch-depth: 0
+
+            # Storing secret for Production org
+            - name: 'Populating auth file with SFDX_URL secret of the Production Org'
+              shell: bash
+              run: |
+                  echo ${{ secrets.SF_PRODUCTION_AUTH_URL}} > ./SF_PRODUCTION_AUTH_URL.txt
+
+            - name: 'Creating delta packages for new, modified or deleted metadata'
+              run: | 
+                  mkdir -p changed-sources
+                  sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/ -i .forceignore
+
+            # Authenticating to Production org
+            - name: 'Authenticating to Production Org'
+              run: sfdx auth:sfdxurl:store -f ./SF_PRODUCTION_AUTH_URL.txt -s -a Repro
+
+            # Deploying the whole branch to Production org
+            - name: 'Full deployment of the generated delta changes / Run local tests'
+              run: |
+                  chmod +x ./scripts/FullDeploymentSelectedTests.sh
+                  ./scripts/FullDeploymentSelectedTests.sh
